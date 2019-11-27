@@ -23,6 +23,9 @@ POPULATION_ATTRS = {
 
 
 def get_population_vals():
+    """
+    Finds vals for Population constructor when launching script from terminal
+    """
     vals = {}
     for arg in sys.argv[1:]:
         for attr_name, attr_type in POPULATION_ATTRS.items():
@@ -79,20 +82,22 @@ class Population:
         self.starting_min_wealth = kwargs.get('starting_min_wealth', 100)
         self.win = kwargs.get('win', 100)
 
-        self.people_wealth = {}
-        self.people_wealth_start = {}
-        self.results = {}
-
+        # Define attributes that can be computed now
         self.equal_start = kwargs.get('equal_start', False) or self.is_zero(
             self.starting_max_wealth - self.starting_min_wealth
         )
-
         self.name = "Population data:\n    {}".format(
             "\n    ".join([
                 "{}: {}".format(attr_name, attr)
                 for attr_name, attr in self.read().items()
             ])
         )
+
+        # Defines attributes that should be computed later
+        self.people_wealth = {}
+        self.people_wealth_start = {}
+        self.results = {}
+
         self.check_vals()
 
     def __repr__(self):
@@ -126,7 +131,7 @@ class Population:
             raise ValueError(
                 "Precision can't be lower than 0. Set precision to 0 if you"
                 " want only integers, else set the number of decimal places"
-                " you want to see."
+                " you want to use."
             )
         if not 0 <= self.starting_min_wealth <= self.starting_max_wealth:
             raise ValueError(
@@ -134,7 +139,12 @@ class Population:
                 " can't be lower than min wealth."
             )
 
-    def compare_vals(self, value1, value2):
+    def compare_floats(self, value1, value2):
+        """
+        Compares value1 and value2.
+        Returns 0 if value1 and value2 are the same value up to ``precision``
+        digits, else returns 1 if value1 > value2 or -1 if value1 < value2
+        """
         if self.is_zero(value1 - value2):
             return 0
         elif value1 > value2:
@@ -148,11 +158,23 @@ class Population:
 
     @staticmethod
     def get_random_perc(perc):
-        floor_digits = len(str(perc - floor(perc)).split('.')[-1])
-        exp_perc = perc * (10 ** floor_digits)
-        return randint(1, int(exp_perc)) / (10 ** floor_digits)
+        """
+        Returns a percentage `p` such that 0 < p <= perc
+        Instead of computing `p` directly, a random integer is chosen in the
+        interval [1, perc * 10 ** (perc digits)].
+        Then the value is normalized to its default magnitude.
+        I.e.:
+            perc = 1.258 => return randint(1, 1258) / 1000
+        """
+        magnitude = 0
+        normalized_perc = perc * 10 ** magnitude
+        while int(normalized_perc) != normalized_perc:
+            magnitude += 1
+            normalized_perc = perc * 10 ** magnitude
+        return randint(1, normalized_perc) / 10 ** magnitude
 
     def get_transaction_people(self, person1, done):
+        """ Gets people to be used in transactions """
         if self.skip_person(person1, done=done):
             return
 
@@ -163,29 +185,38 @@ class Population:
             return person2
 
         people = (person1,)
+        # NB: `-1` because we already have `person1` in `people`, so there's
+        # already an actor
         actors_num = min(randint(2, self.max_actors), self.num - len(done)) - 1
         while actors_num:
             people += (get_new_person(),)
             actors_num -= 1
+
         return people
 
     def get_transaction_vals(self, people):
-        transaction_vals = {p: self.people_wealth[p] for p in people}
+        """
+        Computes transactions between people and
+        :param people: tuple of integers (each one representing one person)
+        :return result: dict {person: person's wealth after transactions}
+        """
+        result = {p: self.people_wealth[p] for p in people}
 
+        # NB: not calling variables `winners` and `losers` because not every
+        # loser gets to pay its quota (a loser can't pay if has no wealth)
         gainers = self.get_winners(people)
-
         payers = tuple([
-            p
-            for p in people
-            if p not in gainers and not self.is_zero(transaction_vals[p])
+            p for p in people
+            if p not in gainers and not self.is_zero(result[p])
         ])
         if not payers:
-            return transaction_vals
+            return result
 
-        gainers_wealth = sum(transaction_vals[p] for p in gainers)
-        payers_wealth = sum(transaction_vals[p] for p in payers)
         win, loss = self.get_win_loss_perc()
-        comparison = self.compare_vals(gainers_wealth, payers_wealth)
+
+        gainers_wealth = sum(result[p] for p in gainers)
+        payers_wealth = sum(result[p] for p in payers)
+        comparison = self.compare_floats(gainers_wealth, payers_wealth)
         if comparison == 1:
             perc = loss
         elif comparison == -1:
@@ -196,37 +227,38 @@ class Population:
             else:
                 perc = win
 
+        # `val` is the transaction total amount
         val = payers_wealth * perc / 100
 
+        # Give every gainer the same amount
         gain = val / len(gainers)
         for p in gainers:
-            transaction_vals[p] += gain
+            result[p] += gain
 
         to_pay = val / len(payers)
         has_paid = ()
-        cant_pay = tuple([
-            p
-            for p in payers
-            if transaction_vals[p] and transaction_vals[p] <= to_pay
-        ])
 
+        # Define those who can't pay the whole amount; make them pay what they
+        # can, set them into `has_paid` while lowering `val` each time someone
+        # pays. Then, recompute the single person's payment and go through this
+        # again until payment is low enough to be affordable to all those who
+        # still have to pay their share.
+        cant_pay = tuple([
+            p for p in payers if result[p] and result[p] <= to_pay
+        ])
         while cant_pay:
             for p in cant_pay:
                 has_paid += (p,)
-                val -= transaction_vals[p]
-                transaction_vals[p] = 0
+                val -= result[p]
+                result[p] = 0
             to_pay = val / len(payers)
             cant_pay = tuple([
-                p
-                for p in payers
-                if transaction_vals[p] and transaction_vals[p] <= to_pay
+                p for p in payers if result[p] and result[p] <= to_pay
             ])
+        for p in tuple(set(payers) - set(has_paid)):
+            result[p] -= to_pay
 
-        for p in payers:
-            if p not in has_paid:
-                transaction_vals[p] -= to_pay
-
-        return transaction_vals
+        return result
 
     def get_win_loss_perc(self):
         win = self.win
@@ -240,41 +272,72 @@ class Population:
     def get_winners(self, people):
         winners = ()
 
+        # Winners num is upper-bounded
         winners_num = randint(1, self.max_winners)
         total_wealth = self.round(sum(self.people_wealth[p] for p in people))
 
         if not self.meritocracy or self.is_zero(total_wealth):
+            # Choose people in a completely random way
             while winners_num:
                 winners += (people[randint(0, len(people) - 1)], )
                 winners_num -= 1
-                break
+            # Avoid repetitions in `winners`
             return tuple(set(winners))
 
-        def get_prob_key(c):
-            if c:
-                inf = sum(self.people_wealth[people[n]] for n in range(c))
-            else:
+        # Probability is defined as (inf, sup, person) for every person, where
+        # 0 <= inf < sup <= 1.
+        # This way, we'll extract a random float between 0 and 1, which defines
+        # who wins.
+        # I.e.:
+        #     probability = [
+        #           inf     sup  person
+        #         (0.00,   0.20,      1),
+        #         (0.20,   0.75,      2),
+        #         (0.75,   1.00,      3)
+        #     ]
+        #     res = 0.8518519551928782
+        #     => person 3 wins
+        #
+        # NB: if `res` is an overlapping value for some inf-sup consecutive
+        # couples (in the above example, 0.20 or 0.75), the person with `res`
+        # as `inf` wins.
+        # I.e.:
+        #     probability = [
+        #           inf     sup  person
+        #         (0.00,   0.20,      1),
+        #         (0.20,   0.75,      2),
+        #         (0.75,   1.00,      3)
+        #     ]
+        #     res = 0.20
+        #     => person 2 wins
+        probability = []
+        for num, person in enumerate(people):
+            # People with 0 wealth have no chance to win a transaction.
+            # That would be non-meritocratic, of course.
+            if not self.people_wealth[person]:
+                continue
+
+            if not probability:
                 inf = 0
-            sup = inf + self.people_wealth[people[c]]
-            return inf / total_wealth, sup / total_wealth
+            else:
+                inf = max(s for (i, s, p) in probability)
+            sup = inf + (self.people_wealth[person] / total_wealth)
+            probability.append((inf, sup, person))
 
-        prob = {
-            get_prob_key(x): people[x]
-            for x in range(len(people))
-            if self.people_wealth[people[x]]
-        }
-
+        # Get every winner (each one may appear multiple times)
         while winners_num:
             res = uniform(0, 1)
-            while res == 1:
-                res = uniform(0, 1)
-
-            for (min_prob, max_prob), person in prob.items():
+            for min_prob, max_prob, person in probability:
+                # Checking equality only on lower value because of:
+                #   1. duplicates, since a person's lower value can be
+                #      another person's higher value;
+                #   2. function `uniform`'s known issue of not always
+                #      including second parameter in possible outputs
                 if min_prob <= res < max_prob:
                     winners += (person, )
                     winners_num -= 1
-                    break
 
+        # Remove repetitions in `winners`
         return tuple(set(winners))
 
     def is_zero(self, value):
@@ -288,8 +351,13 @@ class Population:
             done = ()
             for person in self.people_wealth.keys():
                 people = self.get_transaction_people(person, done)
+
+                # Make transactions only if there are 2 or more people to
+                # actually interact with each other
                 if people and len(people) > 1:
                     self.make_single_transaction(people)
+
+                    # No need to update `done` if duplicates are allowed
                     if not self.allow_duplicates:
                         done += people
 
@@ -395,17 +463,27 @@ class Population:
         }
 
     def round(self, value):
-        if value == 0:
-            return value
-        return round(value * (10 ** self.precision)) / (10 ** self.precision)
+        """ Rounds `value` according to `precision` attribute """
+        return round(value, self.precision)
 
     def skip_person(self, person, others=None, done=None):
+        """
+        Checks whether given `person` should be skipped from current
+        transaction.
+        """
+
+        # `done` should always be empty if `allow_duplicates` is True
+        if self.allow_duplicates:
+            done = []
         done = set(done or [])
         if person in done:
             return True
+        # Check if every other person in given population has already partaken
+        # in some transaction
         elif set(self.people_wealth.keys()) - done == {person}:
             return True
 
+        # Avoid using twice the same person within the same transaction
         others = tuple(others or [])
         if person in others:
             return True
@@ -413,6 +491,7 @@ class Population:
         return False
 
     def set_population_wealth(self):
+        """ Generates population wealth before starting any transactions """
         if self.equal_start:
             wealth = self.round(
                 (self.starting_min_wealth + self.starting_max_wealth) / 2
@@ -423,7 +502,7 @@ class Population:
             }
 
         else:
-            if self.compare_vals(
+            if self.compare_floats(
                 self.starting_min_wealth, self.starting_max_wealth
             ) > 1:
                 raise ValueError(
@@ -434,9 +513,12 @@ class Population:
                 x: randint(self.starting_min_wealth, self.starting_max_wealth)
                 for x in range(1, self.num + 1)
             }
+
+        # Copy starting wealth to allow comparison after transactions
         self.people_wealth_start = self.people_wealth.copy()
 
     def set_results(self):
+        """ Compute population results after all transactions are done """
         res = sorted([self.round(w) for w in self.people_wealth.values()])
 
         avg_wealth = sqrt(sum(w ** 2 for w in res) / self.num)
@@ -452,8 +534,7 @@ class Population:
         poorer_than_avg_perc = self.round(poorer_than_avg / self.num * 100)
 
         poorer_than_begin = len([
-            p
-            for p, w in self.people_wealth.items()
+            p for p, w in self.people_wealth.items()
             if w <= self.people_wealth_start[p]
         ])
         poorer_than_begin_perc = self.round(poorer_than_begin / self.num * 100)
@@ -516,6 +597,9 @@ class Population:
             poorer_than_med_perc=poorer_than_med_perc,
             population_by_deciles=population_by_deciles,
         )
+
+
+Population.__init__.__doc__ = Population.__doc__
 
 
 if __name__ == '__main__':
