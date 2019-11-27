@@ -13,7 +13,7 @@ POPULATION_ATTRS = {
     'max_winners': (int,),
     'meritocracy': (bool,),
     'num': (int,),
-    'precision': (float, int),
+    'precision': (int,),
     'random_loss': (bool,),
     'random_win': (bool,),
     'starting_max_wealth': (float, int),
@@ -98,15 +98,7 @@ class Population:
         self.people_wealth_start = {}
         self.results = {}
 
-        self.check_vals()
-
-    def __repr__(self):
-        return self.name
-
-    def __str__(self):
-        return repr(self)
-
-    def check_vals(self):
+        # Check attributes
         if self.days < 1:
             raise ValueError("Days can't be lower than 1.")
         if not (0 <= self.loss <= 100) or self.win < 0 or self.win < self.loss:
@@ -138,6 +130,18 @@ class Population:
                 "Starting max and min wealth must both be >= 0, and max wealth"
                 " can't be lower than min wealth."
             )
+
+    def __getitem__(self, item):
+        return getattr(self, item)
+
+    def __repr__(self):
+        return self.name
+
+    def __setitem__(self, key, value):
+        setattr(self, key, value)
+
+    def __str__(self):
+        return repr(self)
 
     def compare_floats(self, value1, value2):
         """
