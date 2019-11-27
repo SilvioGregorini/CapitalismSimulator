@@ -9,6 +9,8 @@ POPULATION_ATTRS = {
     'days': (int,),
     'equal_start': (bool,),
     'loss': (float, int),
+    'max_actors': (int,),
+    'max_winners': (int,),
     'meritocracy': (bool,),
     'num': (int,),
     'precision': (float, int),
@@ -49,6 +51,8 @@ class Population:
     > 'days': int, defines for how many days transactions take place
     > 'equal_start': bool, defines whether everyone start with same wealth
     > 'loss': float or int, defines loss percentage for losing transactions
+    > 'max_actors': int, max number of people taking part into a transaction
+    > 'max_winners': int, max number of winners in a transaction
     > 'meritocracy': bool, gives wealthier persons more chance to win
         transactions
     > 'num': int, population number
@@ -64,6 +68,8 @@ class Population:
         self.allow_duplicates = kwargs.get('allow_duplicates', True)
         self.days = kwargs.get('days', 365)
         self.loss = kwargs.get('loss', 100)
+        self.max_actors = kwargs.get('max_actors', 2)
+        self.max_winners = kwargs.get('max_winners', 1)
         self.meritocracy = kwargs.get('meritocracy', True)
         self.num = kwargs.get('num', 1000)
         self.precision = kwargs.get('precision', 2)
@@ -77,10 +83,8 @@ class Population:
         self.people_wealth_start = {}
         self.results = {}
 
-        self.equal_start = kwargs.get('equal_start', False) or (
-            self.compare_vals(
-                self.starting_max_wealth, self.starting_min_wealth
-            ) == 0
+        self.equal_start = kwargs.get('equal_start', False) or self.is_zero(
+            self.starting_max_wealth - self.starting_min_wealth
         )
 
         self.name = "Population data:\n    {}".format(
@@ -100,10 +104,21 @@ class Population:
     def check_vals(self):
         if self.days < 1:
             raise ValueError("Days can't be lower than 1.")
-        if not (0 <= self.loss <= 100) or self.win < 0:
+        if not (0 <= self.loss <= 100) or self.win < 0 or self.win < self.loss:
             raise ValueError(
                 "Loss percentage can't be lower than 0 or higher than 100."
-                " Win percentage can't be lower than 0."
+                " Win percentage can't be lower than 0 and must be higher "
+                " than loss percentage."
+            )
+        if self.max_actors < 2 or self.max_actors > self.num:
+            raise ValueError(
+                "Max actors number can't be lower than 2 nor higher than"
+                " the population itself."
+            )
+        if not 0 < self.max_winners < self.max_actors:
+            raise ValueError(
+                "Max winners number must be higher than 0 (at least 1 winner)"
+                " and lower than max actors number (at least 1 loser)."
             )
         if self.num < 2:
             raise ValueError("Population can't be lower than 2.")
@@ -127,12 +142,6 @@ class Population:
         else:
             return -1
 
-    def get_people_wealth(self, people):
-        wealth = ()
-        for person in people:
-            wealth += (self.people_wealth[person],)
-        return wealth
-
     @staticmethod
     def get_population_attrs():
         return POPULATION_ATTRS
@@ -143,21 +152,81 @@ class Population:
         exp_perc = perc * (10 ** floor_digits)
         return randint(1, int(exp_perc)) / (10 ** floor_digits)
 
-    def get_transaction_value(self, person1, person2, winner):
-        wealth1, wealth2 = self.get_people_wealth((person1, person2))
+    def get_transaction_people(self, person1, done):
+        if self.skip_person(person1, done=done):
+            return
+
+        def get_new_person():
+            person2 = randint(1, self.num)
+            while self.skip_person(person2, others=people, done=done):
+                person2 = randint(1, self.num)
+            return person2
+
+        people = (person1,)
+        actors_num = min(randint(2, self.max_actors), self.num - len(done)) - 1
+        while actors_num:
+            people += (get_new_person(),)
+            actors_num -= 1
+        return people
+
+    def get_transaction_vals(self, people):
+        transaction_vals = {p: self.people_wealth[p] for p in people}
+
+        gainers = self.get_winners(people)
+
+        payers = tuple([
+            p
+            for p in people
+            if p not in gainers and not self.is_zero(transaction_vals[p])
+        ])
+        if not payers:
+            return transaction_vals
+
+        gainers_wealth = sum(transaction_vals[p] for p in gainers)
+        payers_wealth = sum(transaction_vals[p] for p in payers)
         win, loss = self.get_win_loss_perc()
-
-        if self.is_zero(wealth1 - wealth2):
-            return self.round((wealth1 + wealth2) * (win + loss) / 400)
-
-        base = min(wealth1, wealth2)
-        poor = {wealth1: person1, wealth2: person2}[base]
-        if winner == poor:
-            multiplier = win
+        comparison = self.compare_vals(gainers_wealth, payers_wealth)
+        if comparison == 1:
+            perc = loss
+        elif comparison == -1:
+            perc = win
         else:
-            multiplier = loss
+            if len(gainers) >= len(payers):
+                perc = loss
+            else:
+                perc = win
 
-        return self.round(base * multiplier / 100)
+        val = payers_wealth * perc / 100
+
+        gain = val / len(gainers)
+        for p in gainers:
+            transaction_vals[p] += gain
+
+        to_pay = val / len(payers)
+        has_paid = ()
+        cant_pay = tuple([
+            p
+            for p in payers
+            if transaction_vals[p] and transaction_vals[p] <= to_pay
+        ])
+
+        while cant_pay:
+            for p in cant_pay:
+                has_paid += (p,)
+                val -= transaction_vals[p]
+                transaction_vals[p] = 0
+            to_pay = val / len(payers)
+            cant_pay = tuple([
+                p
+                for p in payers
+                if transaction_vals[p] and transaction_vals[p] <= to_pay
+            ])
+
+        for p in payers:
+            if p not in has_paid:
+                transaction_vals[p] -= to_pay
+
+        return transaction_vals
 
     def get_win_loss_perc(self):
         win = self.win
@@ -168,67 +237,63 @@ class Population:
             loss = Population.get_random_perc(loss)
         return win, loss
 
-    def get_winner(self, person1, person2):
-        if not self.meritocracy:
-            return {0: person1, 1: person2}[randint(0, 1)]
+    def get_winners(self, people):
+        winners = ()
 
-        wealth1, wealth2 = self.get_people_wealth((person1, person2))
-        if self.is_zero(wealth1 + wealth2):
-            return person1
+        winners_num = randint(1, self.max_winners)
+        total_wealth = self.round(sum(self.people_wealth[p] for p in people))
+
+        if not self.meritocracy or self.is_zero(total_wealth):
+            while winners_num:
+                winners += (people[randint(0, len(people) - 1)], )
+                winners_num -= 1
+                break
+            return tuple(set(winners))
+
+        def get_prob_key(c):
+            if c:
+                inf = sum(self.people_wealth[people[n]] for n in range(c))
+            else:
+                inf = 0
+            sup = inf + self.people_wealth[people[c]]
+            return inf / total_wealth, sup / total_wealth
 
         prob = {
-            person1: (0, wealth1 / (wealth1 + wealth2)),
-            person2: (wealth1 / (wealth1 + wealth2), 1)
+            get_prob_key(x): people[x]
+            for x in range(len(people))
+            if self.people_wealth[people[x]]
         }
 
-        res = uniform(0, 1)
-
-        def is_in(r, p):
-            return min(prob[p]) <= r <= max(prob[p])
-
-        while (is_in(res, person1) and is_in(res, person2)) \
-                or not (is_in(res, person1) or is_in(res, person2)):
+        while winners_num:
             res = uniform(0, 1)
-        if is_in(res, person1):
-            return person1
-        else:
-            return person2
+            while res == 1:
+                res = uniform(0, 1)
+
+            for (min_prob, max_prob), person in prob.items():
+                if min_prob <= res < max_prob:
+                    winners += (person, )
+                    winners_num -= 1
+                    break
+
+        return tuple(set(winners))
 
     def is_zero(self, value):
         return abs(self.round(value)) < 10 ** -self.precision
 
+    def make_single_transaction(self, people):
+        self.people_wealth.update(self.get_transaction_vals(people))
+
     def make_transactions(self):
         for day in range(1, self.days + 1):
-            print("Day {}".format(day))
-            done = []
-            for person1, wealth1 in self.people_wealth.items():
-                if not self.allow_duplicates and (
-                        person1 in done
-                        or (self.num % 2 and self.num - len(done) == 1)
-                ):
-                    continue
+            done = ()
+            for person in self.people_wealth.keys():
+                people = self.get_transaction_people(person, done)
+                if people and len(people) > 1:
+                    self.make_single_transaction(people)
+                    if not self.allow_duplicates:
+                        done += people
 
-                person2 = 0
-                while not person2 or person2 == person1 \
-                        or (not self.allow_duplicates and person2 in done):
-                    person2 = randint(1, self.num)
-                wealth2 = self.people_wealth[person2]
-
-                winner = self.get_winner(person1, person2)
-                value = self.get_transaction_value(person1, person2, winner)
-
-                sign1 = 1 if person1 == winner else -1
-                sign2 = 1 if person2 == winner else -1
-                self.people_wealth.update({
-                    person1: wealth1 + (sign1 * value),
-                    person2: wealth2 + (sign2 * value),
-                })
-
-                done += [person1, person2]
-                print(
-                    "Day {} - transactions {}, {} completed"
-                    .format(day, len(done) - 1, len(done))
-                )
+            print("Day {} completed".format(day))
 
     def print_results(self):
         res = sorted([self.round(w) for w in self.people_wealth.values()])
@@ -333,6 +398,19 @@ class Population:
         if value == 0:
             return value
         return round(value * (10 ** self.precision)) / (10 ** self.precision)
+
+    def skip_person(self, person, others=None, done=None):
+        done = set(done or [])
+        if person in done:
+            return True
+        elif set(self.people_wealth.keys()) - done == {person}:
+            return True
+
+        others = tuple(others or [])
+        if person in others:
+            return True
+
+        return False
 
     def set_population_wealth(self):
         if self.equal_start:
