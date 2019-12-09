@@ -1,8 +1,16 @@
+# Author(s): Silvio Gregorini (silviogregorini@openforce.it)
+# Copyright 2019 Silvio Gregorini (github.com/SilvioGregorini)
+# License LGPL-3.0 or later (https://www.gnu.org/licenses/lgpl).
+
 import sys
 
-from collections import Counter, OrderedDict
-from math import floor, sqrt
+from collections import Counter
+from math import floor
 from random import randint, uniform
+
+from frozen_dict import FrozenDict
+from graph import Graph
+
 
 POPULATION_ATTRS = {
     'allow_duplicates': (bool,),
@@ -78,6 +86,7 @@ class Population:
         self.precision = kwargs.get('precision', 2)
         self.random_loss = kwargs.get('random_loss', True)
         self.random_win = kwargs.get('random_win', True)
+        self.show_graph_after_days = kwargs.get('show_plot', 7)
         self.starting_max_wealth = kwargs.get('starting_max_wealth', 100)
         self.starting_min_wealth = kwargs.get('starting_min_wealth', 100)
         self.win = kwargs.get('win', 100)
@@ -94,6 +103,7 @@ class Population:
         )
 
         # Defines attributes that should be computed later
+        self.graph = None
         self.people_wealth = {}
         self.people_wealth_start = {}
         self.results = {}
@@ -278,9 +288,9 @@ class Population:
 
         # Winners num is upper-bounded
         winners_num = randint(1, self.max_winners)
-        total_wealth = self.round(sum(self.people_wealth[p] for p in people))
+        p_wealth = self.round(sum(self.people_wealth[p] for p in people))
 
-        if not self.meritocracy or self.is_zero(total_wealth):
+        if not self.meritocracy or self.is_zero(p_wealth):
             # Choose people in a completely random way
             while winners_num:
                 winners += (people[randint(0, len(people) - 1)], )
@@ -325,7 +335,7 @@ class Population:
                 inf = 0
             else:
                 inf = max(s for (i, s, p) in probability)
-            sup = inf + (self.people_wealth[person] / total_wealth)
+            sup = inf + (self.people_wealth[person] / p_wealth)
             probability.append((inf, sup, person))
 
         # Get every winner (each one may appear multiple times)
@@ -345,7 +355,7 @@ class Population:
         return tuple(set(winners))
 
     def is_zero(self, value):
-        return abs(self.round(value)) < 10 ** -self.precision
+        return abs(self.round(value)) < 10 ** (- self.precision)
 
     def make_single_transaction(self, people):
         self.people_wealth.update(self.get_transaction_vals(people))
@@ -366,99 +376,49 @@ class Population:
                         done += people
 
             print("Day {} completed".format(day))
+            self.update_graph()
+            if day == self.days:
+                # Show graph after last day
+                self.graph.show()
+            elif self.show_graph_after_days > 0 \
+                    and not day % self.show_graph_after_days:
+                self.graph.show()
 
     def print_results(self):
-        res = sorted([self.round(w) for w in self.people_wealth.values()])
-
-        def fmt(s):
-            f = '.{}f'.format(self.precision) if self.precision > 0 else ''
-            return format(s, f)
-
-        pop_by_deciles_list = [
-            ('Decile', 'Range', '', 'Abs', 'Perc', 'Total wealth')
-        ]
-        col_lenghts = {x: len(pop_by_deciles_list[0][x]) + 1 for x in range(6)}
-        for (min_d, max_d), d_vals in self.results['population_by_deciles'].items():
-            descr = d_vals['decile']
-            if len(descr) > col_lenghts[0]:
-                col_lenghts[0] = len(descr) + 1
-            min_wealth = fmt(self.round(min_d))
-            if len(min_wealth) > col_lenghts[1]:
-                col_lenghts[1] = len(min_wealth) + 1
-            max_wealth = fmt(self.round(max_d))
-            if len(max_wealth) > col_lenghts[2]:
-                col_lenghts[2] = len(min_wealth) + 1
-            abs_val = str(int(self.round(d_vals['abs'])))
-            if len(abs_val) > col_lenghts[3]:
-                col_lenghts[3] = len(abs_val) + 1
-            perc_val = fmt(self.round(d_vals['perc']))
-            if len(perc_val) > col_lenghts[4]:
-                col_lenghts[4] = len(perc_val) + 1
-            wealth = fmt(self.round(d_vals['tot_w']))
-            if len(wealth) > col_lenghts[5]:
-                col_lenghts[5] = len(wealth) + 1
-            pop_by_deciles_list += [
-                (descr, min_wealth, max_wealth, abs_val, perc_val, wealth),
-            ]
-        pop_by_deciles_str = ""
-        title = True
-        for array in pop_by_deciles_list:
-            new_array = ()
-            if title:
-                for x in range(6):
-                    item = array[x]
-                    new_array += (item + " " * (col_lenghts[x] - len(item)),)
-                    if x == 1:
-                        new_array += ('  ',)
-                title = False
-            else:
-                for x in range(6):
-                    item = array[x]
-                    new_array += (" " * (col_lenghts[x] - len(item)) + item,)
-                    if x == 1:
-                        new_array += ('->',)
-            pop_by_deciles_str += "\n {} | {} {} {} | {} | {} | {}" \
-                .format(*new_array)
-
-        lower_percenter = self.results['lower_percenter']
-        one_percenter = self.results['one_percenter']
-        if len(lower_percenter) + len(one_percenter) == self.num:
-            one_percenter_str = "The 1% has more wealth than anyone else" \
-                                " combined."
-        else:
-            one_percenter_str = "The 1% has as much wealth as the lower {}%."\
-                .format(
-                    fmt(self.round(len(lower_percenter) / self.num * 100))
-                )
+        prec = self.precision
+        fmt = '.{}f'.format(prec)
+        res = sorted([self.round(x) for x in self.people_wealth.values()])
 
         print("\n* RESULTS *\n")
         print(
             ">>> Ordered distribution:\n    " + '; '.join(
-                "{}: {}".format(fmt(k), v)
+                "{}: {}".format(format(k, fmt), v)
                 for k, v in dict(Counter(res)).items()
             )
         )
         print(">>> " + str(self))
-        print(">>> Total wealth: {}".format(fmt(sum(res))))
-        print(">>> Average wealth: " + fmt(self.results['avg_wealth']))
-        print(">>> Median wealth: " + fmt(self.results['median_wealth']))
+        print(">>> Total wealth: {}".format(format(
+            self.round(sum(res)), fmt
+        )))
+        print(">>> Average wealth: " + format(
+            self.results['avg_wealth'], fmt
+        ))
+        print(">>> Median wealth: " + format(
+            self.results['median_wealth'], fmt
+        ))
         print(
             ">>> Number of people who are poorer than the beginning: {} ({}%)"
             .format(str(self.results['poorer_than_begin']),
-                    fmt(self.results['poorer_than_begin_perc']))
+                    format(self.results['poorer_than_begin_perc'], fmt))
         )
         print(
             ">>> Number of people who are poorer than the average: {} ({}%)"
             .format(str(self.results['poorer_than_avg']),
-                    fmt(self.results['poorer_than_avg_perc']))
+                    format(self.results['poorer_than_avg_perc'], fmt))
         )
         print(
-            ">>> Number of people who are poorer than the median: {} ({}%)"
-            .format(str(self.results['poorer_than_med']),
-                    fmt(self.results['poorer_than_med_perc']))
+            ">>> Gini coefficient: " + format(self.graph.gini_coeff, fmt)
         )
-        print(">>> " + one_percenter_str)
-        print(">>> Population by deciles:" + pop_by_deciles_str)
 
     def read(self):
         return {
@@ -466,9 +426,9 @@ class Population:
             for attr_name in sorted(list(self.get_population_attrs().keys()))
         }
 
-    def round(self, value):
+    def round(self, value, force_precision=None):
         """ Rounds `value` according to `precision` attribute """
-        return round(value, self.precision)
+        return round(value, ndigits=force_precision or self.precision)
 
     def skip_person(self, person, others=None, done=None):
         """
@@ -497,11 +457,11 @@ class Population:
     def set_population_wealth(self):
         """ Generates population wealth before starting any transactions """
         if self.equal_start:
-            wealth = self.round(
+            w = self.round(
                 (self.starting_min_wealth + self.starting_max_wealth) / 2
             )
             self.people_wealth = {
-                x: wealth
+                x: w
                 for x in range(1, self.num + 1)
             }
 
@@ -519,96 +479,49 @@ class Population:
             }
 
         # Copy starting wealth to allow comparison after transactions
-        self.people_wealth_start = self.people_wealth.copy()
+        self.people_wealth_start = FrozenDict(self.people_wealth)
+        self.update_graph()
+        self.graph.show()
 
     def set_results(self):
-        """ Compute population results after all transactions are done """
-        res = sorted([self.round(w) for w in self.people_wealth.values()])
+        """
+        Compute population results after all transactions are done.
+        """
+        wealths = tuple(sorted(self.people_wealth.values()))
+        total_wealth = sum(wealths)
 
-        avg_wealth = sqrt(sum(w ** 2 for w in res) / self.num)
-
+        # Get average and median wealth
+        avg_wealth = total_wealth / self.num
+        pos = floor(self.num / 2)
         if self.num % 2:
-            pos = floor(self.num / 2)
-            median_wealth = res[pos]
+            # Median for an odd number of values
+            median_wealth = wealths[pos]
         else:
-            pos = int(self.num / 2)
-            median_wealth = (res[pos - 1] + res[pos]) / 2
+            # Median for an even number of values
+            median_wealth = (wealths[pos - 1] + wealths[pos]) / 2
 
-        poorer_than_avg = len([w for w in res if w <= avg_wealth])
-        poorer_than_avg_perc = self.round(poorer_than_avg / self.num * 100)
+        poorer_than_avg = len([w for w in wealths if w <= avg_wealth])
+        poorer_than_avg_perc = poorer_than_avg / self.num * 100
 
         poorer_than_begin = len([
             p for p, w in self.people_wealth.items()
             if w <= self.people_wealth_start[p]
         ])
-        poorer_than_begin_perc = self.round(poorer_than_begin / self.num * 100)
+        poorer_than_begin_perc = poorer_than_begin / self.num * 100
 
-        poorer_than_med = len([w for w in res if w <= median_wealth])
-        poorer_than_med_perc = self.round(poorer_than_med / self.num * 100)
-
-        min_res, max_res = min(res), max(res)
-        delta_res = max_res - min_res
-
-        def get_decile_key(k):
-            inf = min_res + k * delta_res / 10
-            if k < 9:
-                sup = min_res + (k + 1) * delta_res / 10 - self.precision
-            else:
-                sup = max_res
-            return inf, sup
-
-        population_by_deciles = {
-            get_decile_key(k): OrderedDict({
-                'decile': "{}%-{}%".format(str(k * 10), str((k + 1) * 10)),
-                'abs': 0,
-                'perc': 0,
-                'tot_w': 0
-            })
-            for k in range(10)
-        }
-        for w in res:
-            for d in population_by_deciles.keys():
-                if d[0] <= w <= d[1]:
-                    population_by_deciles[d]['abs'] += 1
-                    population_by_deciles[d]['perc'] += 100 / self.num
-                    population_by_deciles[d]['tot_w'] += w
-
-        one_percenter = sorted(res, reverse=True)[:floor(self.num / 100)]
-        if not one_percenter:
-            one_percenter = [res[-1]]
-        one_percenter_wealth = sum(one_percenter)
-        lower_percenter = []
-        lower_percenter_wealth = 0
-        for w in res:
-            if w in one_percenter \
-                    or lower_percenter_wealth > one_percenter_wealth:
-                break
-            lower_percenter_wealth += w
-            lower_percenter.append(w)
-
-        self.results.update(
+        self.results = FrozenDict(
             avg_wealth=avg_wealth,
-            lower_percenter=lower_percenter,
-            lower_percenter_wealth=lower_percenter_wealth,
             median_wealth=median_wealth,
-            one_percenter=one_percenter,
-            one_percenter_wealth=one_percenter_wealth,
+            people_by_wealth=self.graph.y_quants_data,
             poorer_than_avg=poorer_than_avg,
             poorer_than_avg_perc=poorer_than_avg_perc,
             poorer_than_begin=poorer_than_begin,
             poorer_than_begin_perc=poorer_than_begin_perc,
-            poorer_than_med=poorer_than_med,
-            poorer_than_med_perc=poorer_than_med_perc,
-            population_by_deciles=population_by_deciles,
+            wealth_by_people=self.graph.x_quants_data,
         )
+
+    def update_graph(self):
+        self.graph = Graph(data=self.people_wealth, quants=10)
 
 
 Population.__init__.__doc__ = Population.__doc__
-
-
-if __name__ == '__main__':
-    population = Population(**get_population_vals())
-    population.set_population_wealth()
-    population.make_transactions()
-    population.set_results()
-    population.print_results()
