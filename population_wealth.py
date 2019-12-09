@@ -2,6 +2,7 @@
 # Copyright 2019 Silvio Gregorini (github.com/SilvioGregorini)
 # License LGPL-3.0 or later (https://www.gnu.org/licenses/lgpl).
 
+import csv
 import sys
 
 from collections import Counter
@@ -16,17 +17,18 @@ POPULATION_ATTRS = {
     'allow_duplicates': (bool,),
     'days': (int,),
     'equal_start': (bool,),
-    'loss': (float, int),
     'max_actors': (int,),
+    'max_loss': (float, int),
+    'max_win': (float, int),
     'max_winners': (int,),
     'meritocracy': (bool,),
     'num': (int,),
     'precision': (int,),
     'random_loss': (bool,),
     'random_win': (bool,),
+    'show_graph_after_days': (int,),
     'starting_max_wealth': (float, int),
     'starting_min_wealth': (float, int),
-    'win': (float, int),
 }
 
 
@@ -35,6 +37,27 @@ def get_population_vals():
     Finds vals for Population constructor when launching script from terminal
     """
     vals = {}
+
+    # If there's a config file, read it and create `vals` from it
+    if any(a.startswith('--csv_config=') for a in sys.argv[1:]):
+        # If multiple paths are defined, get only the first one
+        file_path = [a.replace('--csv_config=', '') for a in sys.argv[1:]][0]
+        with open(file_path, 'rt') as csvf:
+            for attr, val in csv.reader(csvf, delimiter=';', quotechar='"'):
+                val = eval(val)
+                if attr in POPULATION_ATTRS:
+                    if isinstance(val, POPULATION_ATTRS[attr]):
+                        vals[attr] = val
+                    else:
+                        raise ValueError(
+                            "'{}' parameter should be {}, not {}"
+                            .format(attr, POPULATION_ATTRS[attr], type(val))
+                        )
+                else:
+                    print(">>> Unknown parameter in config file: " + attr)
+
+    # Then, update `vals` from command line parameters, eventually overriding
+    # the config file
     for arg in sys.argv[1:]:
         for attr_name, attr_type in POPULATION_ATTRS.items():
             arg_name = '--{}='.format(attr_name)
@@ -61,8 +84,9 @@ class Population:
         than 1 transaction per day
     > 'days': int, defines for how many days transactions take place
     > 'equal_start': bool, defines whether everyone start with same wealth
-    > 'loss': float or int, defines loss percentage for losing transactions
     > 'max_actors': int, max number of people taking part into a transaction
+    > 'max_loss': float or int, defines loss percentage for losing transactions
+    > 'max_win': float or int, defines win percentage for losing transactions
     > 'max_winners': int, max number of winners in a transaction
     > 'meritocracy': bool, gives wealthier persons more chance to win
         transactions
@@ -72,24 +96,23 @@ class Population:
     > 'random_win': bool, use random win percentage (lower than fixed win)
     > 'starting_max_wealth': float or int, max wealth allowed at start
     > 'starting_min_wealth': float or int, min wealth allowed at start
-    > 'win': float or int, defines win percentage for losing transactions
     """
 
     def __init__(self, **kwargs):
         self.allow_duplicates = kwargs.get('allow_duplicates', True)
-        self.days = kwargs.get('days', 365)
-        self.loss = kwargs.get('loss', 100)
-        self.max_actors = kwargs.get('max_actors', 2)
-        self.max_winners = kwargs.get('max_winners', 1)
+        self.days = kwargs.get('days') or 365
+        self.max_actors = kwargs.get('max_actors') or 2
+        self.max_loss = kwargs.get('max_loss') or 100
+        self.max_win = kwargs.get('max_win') or 100
+        self.max_winners = kwargs.get('max_winners') or 1
         self.meritocracy = kwargs.get('meritocracy', True)
-        self.num = kwargs.get('num', 1000)
-        self.precision = kwargs.get('precision', 2)
+        self.num = kwargs.get('num') or 1000
+        self.precision = kwargs.get('precision') or 2
         self.random_loss = kwargs.get('random_loss', True)
         self.random_win = kwargs.get('random_win', True)
-        self.show_graph_after_days = kwargs.get('show_plot', 7)
-        self.starting_max_wealth = kwargs.get('starting_max_wealth', 100)
-        self.starting_min_wealth = kwargs.get('starting_min_wealth', 100)
-        self.win = kwargs.get('win', 100)
+        self.show_graph_after_days = kwargs.get('show_graph_after_days') or 7
+        self.starting_max_wealth = kwargs.get('starting_max_wealth') or 100
+        self.starting_min_wealth = kwargs.get('starting_min_wealth') or 100
 
         # Define attributes that can be computed now
         self.equal_start = kwargs.get('equal_start', False) or self.is_zero(
@@ -111,7 +134,8 @@ class Population:
         # Check attributes
         if self.days < 1:
             raise ValueError("Days can't be lower than 1.")
-        if not (0 <= self.loss <= 100) or self.win < 0 or self.win < self.loss:
+        if not (0 <= self.max_loss <= 100) \
+                or self.max_win < 0 or self.max_win < self.max_loss:
             raise ValueError(
                 "Loss percentage can't be lower than 0 or higher than 100."
                 " Win percentage can't be lower than 0 and must be higher "
@@ -275,10 +299,10 @@ class Population:
         return result
 
     def get_win_loss_perc(self):
-        win = self.win
+        win = self.max_win
         if self.random_win:
             win = Population.get_random_perc(win)
-        loss = self.loss
+        loss = self.max_loss
         if self.random_loss:
             loss = Population.get_random_perc(loss)
         return win, loss

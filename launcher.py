@@ -4,26 +4,11 @@
 
 import time
 
-from wealth_distribution_test import Population
+from population_wealth import Population, get_population_vals
 
 
 if __name__ == '__main__':
-    population = Population(
-        allow_duplicates=True,
-        days=365,
-        loss=100,
-        max_actors=2,
-        max_winners=1,
-        meritocracy=True,
-        num=1000,
-        precision=2,
-        random_loss=True,
-        random_win=True,
-        show_graph_after_days=30,
-        starting_max_wealth=100,
-        starting_min_wealth=100,
-        win=100,
-    )
+    population = Population(**get_population_vals())
     population.set_population_wealth()
     population.make_transactions()
     population.set_results()
