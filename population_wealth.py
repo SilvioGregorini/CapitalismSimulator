@@ -9,8 +9,8 @@ from collections import Counter
 from math import floor
 from random import randint, uniform
 
-from frozen_dict import FrozenDict
-from graph import Graph
+from Utils.modules.frozen_dict import FrozenDict
+from Utils.modules.graph import Graph
 
 
 POPULATION_ATTRS = {
